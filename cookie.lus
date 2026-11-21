@@ -107,7 +107,7 @@ local function mac(value, secret)
     if crypto == nil or crypto.hmac == nil then
         error("cookie signing needs the crypto module of Lus 2.0", 3)
     end
-    local digest = crypto.hmac("sha256", secret, value, "base64")
+    local digest = string.transcode(crypto.hmac("sha256", secret, value), "binary", "base64")
     return (digest:gsub("=+$", ""):gsub("+", "-"):gsub("/", "_"))
 end
 
