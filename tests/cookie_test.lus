@@ -1,0 +1,94 @@
+local ROOT = string.match(TEST_DIR, "^(.*)[/\\][^/\\]*$")
+local PACKAGES = string.match(ROOT, "^(.*)[/\\][^/\\]*$")
+pledge("load", "fs:read=" .. PACKAGES .. "/*")
+package.path = ROOT .. "/?.lus;" .. PACKAGES .. "/web/?.lus;" .. PACKAGES .. "/atmos-web/?.lus;" .. package.path
+
+local cookie = require("cookie")
+local web = require("web")
+
+local function needs_crypto()
+    if crypto == nil or crypto.hmac == nil then
+        skip("needs the crypto module")
+    end
+end
+
+local function parse_test()
+    local c = cookie.parse('a=1; b="two"; c=x%20y; a=ignored; =bad; d=')
+    assert(c.a == "1")
+    assert(c.b == "two")
+    assert(c.c == "x y")
+    assert(c.d == "")
+    assert(next(cookie.parse(nil)) == nil)
+end
+
+local function format_test()
+    assert(cookie.format("theme", "dark", { max_age = 3600, http_only = true }) == "theme=dark; Max-Age=3600; HttpOnly")
+    assert(cookie.format("s", "a b;c") == "s=a%20b%3Bc")
+    assert(cookie.format("x", "1", { same_site = "none" }) == "x=1; Secure; SameSite=None")
+    assert(cookie.format("x", "1", { expires = 0, path = "/" }) == "x=1; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT")
+    assert(not catch cookie.format("bad name", "1"))
+    assert(not catch cookie.format("x", "1", { same_site = "sometimes" }))
+end
+
+local function round_trip_test()
+    local value = "a=b; c,d \"e\" é"
+    local header = cookie.format("v", value)
+    local name_value = header:match("^([^;]*)")
+    assert(cookie.parse(name_value).v == value)
+end
+
+local function sign_test()
+    needs_crypto()
+    local signed = cookie.sign("user42", "secret")
+    assert(signed:sub(1, 7) == "user42.")
+    assert(cookie.unsign(signed, "secret") == "user42")
+    assert(cookie.unsign(signed, "other") == nil)
+    assert(cookie.unsign("user42.forged", "secret") == nil)
+    assert(cookie.unsign(signed, { "new", "secret" }) == "user42")
+    assert(cookie.unsign(nil, "secret") == nil)
+end
+
+local function plugin_test()
+    local app = web.app()
+    app:register(cookie)
+    app:get("/", function(req, reply)
+        reply:cookie("seen", "yes", { http_only = true })
+        return { theme = req.cookies.theme }
+    end)
+    app:get("/logout", function(req, reply)
+        reply:clear_cookie("seen")
+        return 204
+    end)
+    local res = app:inject({ path = "/", headers = { Cookie = "theme=dark" } })
+    assert(res:json().theme == "dark")
+    assert(res.headers["set-cookie"] == "seen=yes; Path=/; HttpOnly")
+    res = app:inject({ path = "/logout" })
+    assert(res.headers["set-cookie"]:find("Max-Age=0", 1, true))
+end
+
+local function several_cookies_test()
+    local app = web.app()
+    app:register(cookie)
+    app:get("/", function(req, reply)
+        reply:cookie("a", "1")
+        reply:cookie("b", "2")
+        return 204
+    end)
+    local set = app:inject({ path = "/" }).headers["set-cookie"]
+    assert(type(set) == "table" and #set == 2)
+end
+
+local function signed_plugin_test()
+    needs_crypto()
+    local app = web.app()
+    app:register(cookie, { secret = "k" })
+    app:get("/set", function(req, reply)
+        reply:cookie("uid", "7", { signed = true })
+        return 204
+    end)
+    app:get("/get", function(req) return { uid = req.signed_cookies.uid } end)
+    local set = app:inject({ path = "/set" }).headers["set-cookie"]
+    local pair = set:match("^([^;]*)")
+    assert(app:inject({ path = "/get", headers = { Cookie = pair } }):json().uid == "7")
+    assert(app:inject({ path = "/get", headers = { Cookie = "uid=7.bad" } }):json().uid == false)
+end
