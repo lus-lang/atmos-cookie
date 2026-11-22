@@ -1,13 +1,14 @@
---- Parses and formats HTTP cookies, signs their values, and adds them to
---- `web` applications.
+--- Parses, formats, and signs HTTP cookies, with a plugin for `web`
+--- applications.
 ---
 --- `cookie.parse` reads a `Cookie` request header. `cookie.format` writes a
 --- `Set-Cookie` response header. `cookie.sign` and `cookie.unsign` protect a
---- value with HMAC-SHA-256 from the standard library `crypto` module. As a
---- `web` plugin, the module adds `req.cookies` and `reply:cookie`.
+--- value with an HMAC-SHA-256 signature, which the standard library `crypto`
+--- module computes. As a `web` plugin, the module adds `req.cookies` and
+--- `reply:cookie`.
 ---
 --- @package cookie
---- @version 0.1.0
+--- @version 1.0.0
 --- @lus 2.0
 --- @license 0BSD
 --- @repository https://github.com/lus-lang/atmos-cookie
@@ -29,10 +30,10 @@ end
 
 --- Parses the value of a `Cookie` header into a table from names to values.
 ---
---- Values are percent-decoded and lose surrounding double quotes. When a
---- name repeats, the first value wins, which matches the order in which
---- browsers send the most specific cookie first. A `nil` header gives an
---- empty table.
+--- Values are percent-decoded, with surrounding double quotes removed. When
+--- a name repeats, the table keeps the first value, because browsers send
+--- the most specific cookie first. A `nil` or empty header returns an empty
+--- table.
 --- @param header string? The header value.
 --- @return table
 function M.parse(header)
@@ -56,12 +57,13 @@ local SAME_SITE = { strict = "Strict", lax = "Lax", none = "None" }
 
 --- Formats a `Set-Cookie` header value.
 ---
---- The value is percent-encoded where a cookie may not hold a character.
+--- Characters that a cookie value may not contain are percent-encoded.
 --- `options` may hold `path`, `domain`, `max_age` in seconds, `expires` as
 --- seconds since the epoch, `secure`, `http_only`, `same_site` (`"strict"`,
---- `"lax"`, or `"none"`), and `partitioned`. `same_site = "none"` sets
---- `Secure` as browsers require. A name with a character outside the token
---- characters of RFC 6265 raises an error.
+--- `"lax"`, or `"none"`), and `partitioned`. `same_site = "none"` also sets
+--- `Secure`, which browsers require for `SameSite=None`. A name with a
+--- character outside the token characters of RFC 6265 raises an error, as
+--- does any other `same_site` value.
 --- @param name string The cookie name.
 --- @param value string The value.
 --- @param options table? The attributes.
@@ -71,7 +73,7 @@ function M.format(name, value, options)
         error(`invalid cookie name '$name'`, 2)
     end
     options = options or {}
-    local parts = { name .. "=" .. escape(tostring(value)) }
+    local parts = { `$name=$(escape(tostring(value)))` }
     if options.max_age ~= nil then
         parts[#parts + 1] = "Max-Age=" .. math.floor(options.max_age)
     end
@@ -111,19 +113,21 @@ local function mac(value, secret)
     return (digest:gsub("=+$", ""):gsub("+", "-"):gsub("/", "_"))
 end
 
---- Signs a value with HMAC-SHA-256 and returns `value.signature`.
+--- Signs a value with HMAC-SHA-256 and returns `value.signature`, where the
+--- signature is URL-safe base64 without padding.
 --- @param value string The value.
 --- @param secret string The secret key.
 --- @return string
 function M.sign(value, secret)
-    return value .. "." .. mac(value, secret)
+    return `$value.$(mac(value, secret))`
 end
 
 --- Checks a signed value and returns the original value.
 ---
---- Returns `nil` when the signature is missing or wrong. The signature is
---- compared in constant time. `secret` may be a list of secrets, which lets
---- a program rotate keys: the first signs new values and every one verifies.
+--- Returns `nil` when the signature is missing or wrong. The comparison of
+--- signatures takes constant time. `secret` may be a list of secrets, which
+--- lets a program rotate keys: the first signs new values and every one
+--- verifies.
 --- @param signed string The signed value.
 --- @param secret string|table The secret, or a list of secrets.
 --- @return string?
@@ -146,15 +150,19 @@ end
 
 --- Registers the cookie plugin on a `web` scope.
 ---
---- Every request gets `req.cookies`, parsed from its `Cookie` header, and
---- every reply gets `reply:cookie(name, value, options)` and
---- `reply:clear_cookie(name, options)`. With `options.secret`,
---- `signed = true` in the attributes of `reply:cookie` signs the value and
---- `req.signed_cookies[name]` returns the checked value, or `false` when the
---- signature is wrong. The plugin applies to
---- the scope that registers it.
+--- The plugin parses the `Cookie` header of every request into `req.cookies`.
+--- Every reply gets the methods `reply:cookie(name, value, attrs)` and
+--- `reply:clear_cookie(name, attrs)`, which add a `Set-Cookie` header.
+---
+--- `options.defaults` holds the attributes that every cookie gets,
+--- `{ path = "/" }` by default. `options.secret` is a string, or a list of
+--- strings whose first entry signs and every entry verifies. When it is set,
+--- the attribute `signed = true` makes `reply:cookie` sign the value.
+--- `req.signed_cookies[name]` then returns the checked value of a cookie, or
+--- `false` when the cookie is absent or its signature is wrong. A signed
+--- cookie without `options.secret` raises an error.
 --- @param scope table The `web` scope.
---- @param options table? `secret` and `defaults`, the attributes every cookie gets.
+--- @param options table? The options `secret` and `defaults`.
 function M.register(scope, options)
     options = options or {}
     local secret = options.secret
@@ -203,8 +211,8 @@ function M.register(scope, options)
     end)
 end
 
---- Registers into the scope that calls `register`, so every route of that
---- scope sees the cookies.
+--- `true`, so `scope:register(cookie)` applies the plugin to every route of
+--- `scope`.
 M.shared = true
 
 return M
