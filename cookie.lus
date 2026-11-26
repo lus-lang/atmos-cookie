@@ -7,6 +7,17 @@
 --- module computes. As a `web` plugin, the module adds `req.cookies` and
 --- `reply:cookie`.
 ---
+--- The following lines write and read the cookies that store the color
+--- theme and the language of a visitor.
+---
+--- ```lus nocheck
+--- local cookie = require("https://atmosp.here/2.0/cookie.lus")
+---
+--- print(cookie.format("theme", "dark", { max_age = 3600, http_only = true }))
+--- --> theme=dark; Max-Age=3600; HttpOnly
+--- print(cookie.parse("theme=dark; lang=fr").lang)  --> fr
+--- ```
+---
 --- @package cookie
 --- @version 1.0.0
 --- @lus 2.0
@@ -19,7 +30,10 @@ local function unescape(text)
     if text:find("%", 1, true) == nil then
         return text
     end
-    return (text:gsub("%%(%x%x)", function(hex) return string.char(tonumber(hex, 16)) end))
+
+    return (text:gsub("%%(%x%x)", function(hex)
+        return string.char(tonumber(hex, 16))
+    end))
 end
 
 local function escape(text)
@@ -38,18 +52,23 @@ end
 --- @return table
 function M.parse(header)
     local out = {}
+
     if header == nil or header == "" then
         return out
     end
+
     for pair in header:gmatch("[^;]+") do
         local name, value = pair:match("^%s*([^=]-)%s*=%s*(.-)%s*$")
+
         if name and name ~= "" and out[name] == nil then
             if value:sub(1, 1) == '"' and value:sub(-1) == '"' and #value >= 2 then
                 value = value:sub(2, -2)
             end
+
             out[name] = unescape(value)
         end
     end
+
     return out
 end
 
@@ -72,43 +91,57 @@ function M.format(name, value, options)
     if not name:match("^[%w!#$%%&'*+%-.^_`|~]+$") then
         error(`invalid cookie name '$name'`, 2)
     end
+
     options = options or {}
     local parts = { `$name=$(escape(tostring(value)))` }
+
     if options.max_age ~= nil then
-        parts[#parts + 1] = "Max-Age=" .. math.floor(options.max_age)
+        parts[#parts + 1] = `Max-Age=$(math.floor(options.max_age))`
     end
+
     if options.domain then
-        parts[#parts + 1] = "Domain=" .. options.domain
+        parts[#parts + 1] = `Domain=$(options.domain)`
     end
+
     if options.path then
-        parts[#parts + 1] = "Path=" .. options.path
+        parts[#parts + 1] = `Path=$(options.path)`
     end
+
     if options.expires then
-        parts[#parts + 1] = "Expires=" .. os.date("!%a, %d %b %Y %H:%M:%S GMT", math.floor(options.expires))
+        local expires = time.instant(math.floor(options.expires))
+        parts[#parts + 1] = `Expires=$(expires:format("%a, %d %b %Y %H:%M:%S GMT"))`
     end
+
     if options.http_only then
         parts[#parts + 1] = "HttpOnly"
     end
+
     local same_site = options.same_site and SAME_SITE[options.same_site:lower()]
+
     if options.same_site and not same_site then
         error(`invalid same_site '$(options.same_site)'`, 2)
     end
+
     if options.secure or same_site == "None" then
         parts[#parts + 1] = "Secure"
     end
+
     if same_site then
-        parts[#parts + 1] = "SameSite=" .. same_site
+        parts[#parts + 1] = `SameSite=$same_site`
     end
+
     if options.partitioned then
         parts[#parts + 1] = "Partitioned"
     end
+
     return table.concat(parts, "; ")
 end
 
 local function mac(value, secret)
-    if crypto == nil or crypto.hmac == nil then
+    if crypto?.hmac == nil then
         error("cookie signing needs the crypto module of Lus 2.0", 3)
     end
+
     local digest = string.transcode(crypto.hmac("sha256", secret, value), "binary", "base64")
     return (digest:gsub("=+$", ""):gsub("+", "-"):gsub("/", "_"))
 end
@@ -135,16 +168,21 @@ function M.unsign(signed, secret)
     if type(signed) ~= "string" then
         return nil
     end
+
     local value, signature = signed:match("^(.*)%.([%w%-_]+)$")
+
     if value == nil then
         return nil
     end
+
     local secrets = type(secret) == "table" and secret or { secret }
+
     for _, s in ipairs(secrets) do
         if crypto.equal(mac(value, s), signature) then
             return value
         end
     end
+
     return nil
 end
 
@@ -167,46 +205,51 @@ function M.register(scope, options)
     options = options or {}
     local secret = options.secret
     local defaults = options.defaults or { path = "/" }
+
     scope:hook("on_request", function(req)
         local cookies = M.parse(req.headers.cookie)
         req.cookies = cookies
+
         if secret then
             req.signed_cookies = setmetatable({}, {
                 __index = function(cache, name)
-                    local value = M.unsign(cookies[name], secret)
-                    if value == nil then
-                        value = false
-                    end
+                    local value = M.unsign(cookies[name], secret) or false
                     rawset(cache, name, value)
                     return value
                 end,
             })
         end
     end)
+
     scope:decorate_reply("cookie", function(reply, name, value, attrs)
-        local merged = {}
-        for k, v in pairs(defaults) do
-            merged[k] = v
-        end
+        local merged = table.clone(defaults)
+
         for k, v in pairs(attrs or {}) do
             merged[k] = v
         end
+
         if merged.signed then
             if secret == nil then
                 error("signed cookies need the secret option of the cookie plugin", 2)
             end
+
             value = M.sign(tostring(value), type(secret) == "table" and secret[1] or secret)
         end
+
         return reply:header("Set-Cookie", M.format(name, value, merged))
     end)
+
     scope:decorate_reply("clear_cookie", function(reply, name, attrs)
         local merged = { max_age = 0, expires = 0 }
+
         for k, v in pairs(defaults) do
             merged[k] = merged[k] or v
         end
+
         for k, v in pairs(attrs or {}) do
             merged[k] = v
         end
+
         return reply:header("Set-Cookie", M.format(name, "", merged))
     end)
 end

@@ -7,7 +7,7 @@ local cookie = require("cookie")
 local web = require("web")
 
 local function needs_crypto()
-    if crypto == nil or crypto.hmac == nil then
+    if crypto?.hmac == nil then
         skip("needs the crypto module")
     end
 end
@@ -22,10 +22,16 @@ local function parse_test()
 end
 
 local function format_test()
-    assert(cookie.format("theme", "dark", { max_age = 3600, http_only = true }) == "theme=dark; Max-Age=3600; HttpOnly")
+    assert(
+        cookie.format("theme", "dark", { max_age = 3600, http_only = true })
+            == "theme=dark; Max-Age=3600; HttpOnly"
+    )
     assert(cookie.format("s", "a b;c") == "s=a%20b%3Bc")
     assert(cookie.format("x", "1", { same_site = "none" }) == "x=1; Secure; SameSite=None")
-    assert(cookie.format("x", "1", { expires = 0, path = "/" }) == "x=1; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT")
+    assert(
+        cookie.format("x", "1", { expires = 0, path = "/" })
+            == "x=1; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
+    )
     assert(not catch cookie.format("bad name", "1"))
     assert(not catch cookie.format("x", "1", { same_site = "sometimes" }))
 end
@@ -51,14 +57,17 @@ end
 local function plugin_test()
     local app = web.app()
     app:register(cookie)
+
     app:get("/", function(req, reply)
         reply:cookie("seen", "yes", { http_only = true })
         return { theme = req.cookies.theme }
     end)
+
     app:get("/logout", function(_req, reply)
         reply:clear_cookie("seen")
         return 204
     end)
+
     local res = app:inject({ path = "/", headers = { Cookie = "theme=dark" } })
     assert(res:json().theme == "dark")
     assert(res.headers["set-cookie"] == "seen=yes; Path=/; HttpOnly")
@@ -69,11 +78,13 @@ end
 local function several_cookies_test()
     local app = web.app()
     app:register(cookie)
+
     app:get("/", function(_req, reply)
         reply:cookie("a", "1")
         reply:cookie("b", "2")
         return 204
     end)
+
     local set = app:inject({ path = "/" }).headers["set-cookie"]
     assert(type(set) == "table" and #set == 2)
 end
@@ -82,11 +93,16 @@ local function signed_plugin_test()
     needs_crypto()
     local app = web.app()
     app:register(cookie, { secret = "k" })
+
     app:get("/set", function(_req, reply)
         reply:cookie("uid", "7", { signed = true })
         return 204
     end)
-    app:get("/get", function(req) return { uid = req.signed_cookies.uid } end)
+
+    app:get("/get", function(req)
+        return { uid = req.signed_cookies.uid }
+    end)
+
     local set = app:inject({ path = "/set" }).headers["set-cookie"]
     local pair = set:match("^([^;]*)")
     assert(app:inject({ path = "/get", headers = { Cookie = pair } }):json().uid == "7")
@@ -97,14 +113,20 @@ local function several_cookies_over_the_wire_test()
     pledge("network")
     local app = web.app()
     app:register(cookie)
+
     app:get("/", function(_req, reply)
         reply:cookie("a", "1")
         reply:cookie("b", "2", { http_only = true })
         return 204
     end)
+
     local server = network.tcp.bind("127.0.0.1", 0)
     local _, port = server:getsockname()
-    local serving = coroutine.detach(coroutine.create(function() app:listen(server) end))
+
+    local serving = coroutine.detach(coroutine.create(function()
+        app:listen(server)
+    end))
+
     local sock <close> = network.tcp.connect("127.0.0.1", port)
     sock:send("GET / HTTP/1.1\r\nHost: l\r\nConnection: close\r\n\r\n")
     local response = vector.tostring(sock:receive("*a"))
